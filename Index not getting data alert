@@ -1,0 +1,64 @@
+#!/bin/bash
+
+# Kibana Elasticsearch URL
+ES_URL="https://BLPBIL-DARD0601.india.airtel.itm:9200"
+ES_USER="elastic"
+ES_PASS="soqQGAnBeBh65rYkQemP"
+
+# Telegram Bot API Details
+TELEGRAM_TOKEN="your_telegram_bot_token"
+TELEGRAM_CHAT_ID="your_chat_id"
+
+# Function to fetch index patterns
+get_index_patterns() {
+    curl -k -X GET -u "${ES_USER}:${ES_PASS}" "${ES_URL}/_cat/templates?v" | awk 'NR > 1 {print $2}' | sed 's/\[//g; s/\]//g'
+}
+
+# Function to send alert message to Telegram
+send_telegram_alert() {
+    local message=$1
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+    -d chat_id="${TELEGRAM_CHAT_ID}" \
+    -d text="${message}"
+}
+
+# Function to check if data is ingested in the given index pattern
+check_data_ingestion() {
+    local index_pattern=$1
+    # Get the latest document timestamp or count of documents
+    last_doc_timestamp=$(curl -k -X GET -u "${ES_USER}:${ES_PASS}" "${ES_URL}/${index_pattern}/_search?size=1&sort=@timestamp:desc" | jq -r '.hits.hits[0]._source["@timestamp"]')
+
+    if [ "$last_doc_timestamp" ]; then
+        last_timestamp=$(date -d "$last_doc_timestamp" +%s)
+        current_timestamp=$(date +%s)
+        time_diff=$((current_timestamp - last_timestamp))
+
+        # Check if data is ingested within the last 30 minutes (1800 seconds)
+        if [ "$time_diff" -gt 1800 ]; then
+            echo "ALERT: No data ingested for index pattern '$index_pattern' in the last 30 minutes."
+            send_telegram_alert "ALERT: No data ingested for index pattern '$index_pattern' in the last 30 minutes."
+        else
+            echo "Data is ingested for index pattern '$index_pattern'."
+        fi
+    else
+        echo "ALERT: No data found for index pattern '$index_pattern'."
+        send_telegram_alert "ALERT: No data found for index pattern '$index_pattern'."
+    fi
+}
+
+# Main process
+index_patterns=$(get_index_patterns)
+no_data_alert_sent=false
+
+# Loop over each index pattern and check data ingestion
+for index_pattern in $index_patterns; do
+    check_data_ingestion "$index_pattern"
+    if [ $? -ne 0 ]; then
+        no_data_alert_sent=true
+    fi
+done
+
+# Send overall alert if no data is found in any of the index patterns
+if [ "$no_data_alert_sent" = true ]; then
+    send_telegram_alert "ALERT: One or more index patterns are not ingesting data for over 30 minutes."
+fi
