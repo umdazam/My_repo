@@ -2,3 +2,6 @@ find /var/log/logstash/*  -type f -mtime +120 -delete
 
 netstat -tulpn | grep <process_id>
 
+curl -k -v -u 'a1lqhu46:2wSx(okn' -x "https://darts2kibana.india.airtel.itm/api/synthetics/monitors?status=down" | jq '.monitors[] | select(.status == "down" and .name != null) | .name'
+
+
