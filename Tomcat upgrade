@@ -1,0 +1,68 @@
+TOMCAT UPGRADATION ON OPTIMUS SERVERS
+
+1.	Untar the tomcat tar file.
+tar –xvzf  tomcat-9045.tar.gz
+
+2.	Go to the previous installed tomcat directory apache-tomcat-8.5.64
+
+3.	Copy the 7001 and 7002 directory from previous tomcat to new tomcat directory.
+
+cp –r 7001 /locstr/tomcat/tomcat-9045/
+cp –r 7002 /locstr/tomcat/tomcat-9045/
+
+4.	In previous tomcat directory go to conf and copy the server.xml user.xml & tomcat-keystore.jks to the new tomcat conf directory.
+
+cp server.xml /locstr/tomcat/tomcat-9045/conf/
+cp tomcat-user.xml /locstr/tomcat/tomcat-9045/conf/
+cp  tomcat-keystore.jsk /locstr/tomcat/tomcat-9045/conf/
+
+
+5.	Go to bin directory in previous tomcat and copy the setenv.sh to the new tomcat’s bin directory.
+
+cp setenv.sh /locstr/tomcat/tomcat-9045/bin/
+
+6.	Now go to 7002 directory inside new tomcat directory and grep the previous version tomcat files.
+
+grep –ir apache-tomcat*
+
+ 
+ 
+7.	Replace every apache-tomcat-8.5.64 from apache-tomcat
+
+ 
+
+8.	Go to /etc/systemd/system and edit the file tomcat.service
+Change the directory path from apache-tomcat-8.5.64 to apache-tomcat.
+
+ 
+
+9.	Create the symlink for tomcat-9045 with same name we have changed in tomcat.service in /locstr/tomcat/
+
+ln –s tomcat-9045 apache-tomcat 
+ 
+
+10.	Now change ownership to the tomcat:tomcat
+
+chown –R  tomcat:tomcat tomcat-9045
+chown –R  tomcat:tomcat apache-tomcat
+                    
+need to change the path of web.xml file of 
+/locstr/tomcat/tomcat-9045/7002/AIwebservicesv4/WEBINF/web.xml
+change param value as
+/webservicesdata/AbInitioWebservicesconfig/ AbInitioWebservicesconfig.xml
+
+11.	Restart the tomcat server
+ 
+       systemctl daemon-reload          
+       systemctl restart tomcat
+
+12.	Check the manager page and services in web UI if opens perfectly then tomcat upgraded successfully.
+ 
+
+
+ 
+
+
+
+
+
