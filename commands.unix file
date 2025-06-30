@@ -1,0 +1,4 @@
+find /var/log/logstash/*  -type f -mtime +120 -delete
+
+netstat -tulpn | grep <process_id>
+
