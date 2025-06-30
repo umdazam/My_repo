@@ -1,0 +1,368 @@
+echo zone
+if(TaskName == 'Create')
+{
+def (kafka_topic_name, Number_of_partitions, Replication_factor, retention_in_ms, TPS_for_topic, Bandwidth_of_data, Size_of_data_which_will_be_publish_in_1_day, Source_application_name, Consumer_names) = "${ImportantFields}".split(',')
+env.kafka_topic_name = "${ImportantFields}".split(',')[0]
+env.Number_of_partitions = "${ImportantFields}".split(',')[1]
+env.Replication_factor = "${ImportantFields}".split(',')[2]
+env.retention_in_ms = "${ImportantFields}".split(',')[3]
+env.TPS_for_topic = "${ImportantFields}".split(',')[4]
+env.Bandwidth_of_data = "${ImportantFields}".split(',')[5]
+env.Size_of_data_which_will_be_publish_in_1_day = "${ImportantFields}".split(',')[6]
+env.Source_application_name = "${ImportantFields}".split(',')[7]
+env.Consumer_names = "${ImportantFields}".split(',')[8]
+}
+else
+{
+   def (kafka_topic_name) =  "${ImportantFields}".split(',')
+   env.kafka_topic_name =  "${ImportantFields}"
+} 
+
+if(zone == 'ELK') 
+{
+  host='10_240_7_143'
+  bootstrap_server='10.240.7.143:9092,10.240.7.144:9092,10.240.7.145:9092'
+  index_name_create='kafka_topic_elk_na_creation'
+  index_name_delete='kafka_topic_elk_na_deletion'
+  if (retention_in_ms > '259200000')
+  {
+  retention_in_ms=259200000
+  }
+}
+
+else if(zone == 'Staging')
+{
+   host='kafka_NA_Staging_4_34'
+   bootstrap_server='10.240.8.94:9092,10.240.8.106:9092,10.240.8.92:9092'
+   index_name_create='kafka_topic_staging_creation'
+   index_name_delete='kafka_topic_staging_deletion'
+}
+else if(zone == 'GroundhogProd')
+{
+  host='groundhog_prod_7_88'
+  bootstrap_server='10.240.4.47:9092,10.240.4.48:9092,10.240.4.46:9092,10.240.4.42:9092,10.240.4.45:9092,10.240.4.44:9092,10.240.4.43:9092,10.240.4.40:9092,10.240.4.41:9092'
+  index_name_create='kafka_topic_groundhog_prod_creation'
+  index_name_delete='kafka_topic_groundhog_prod_deletion'
+}
+
+else 
+{
+throw new Exception("please provide zone input [ELK]/[GroundhogProd]")
+}
+
+def skipRemainingStages = false
+echo host          
+echo index_name_create
+echo index_name_delete
+
+pipeline 
+{
+    agent 
+    {
+        label host
+    }
+    stages 
+    {
+            stage("Validating Input Parameters")
+            {
+              steps
+              {
+                script
+                {
+                  try
+                  {
+                   if ("${kafka_topic_name}"=='' || "${kafka_topic_name}"==',')
+                   { error("kafka topic name cannot be empty") }
+                   if ("${Number_of_partitions}"=='' || "${Number_of_partitions}"==',')
+                   { error("Number Of Partition cannot be empty") }
+                   if ("${Replication_factor}"=='' || "${Replication_factor}"==',')
+                   { error("Replication Factor cannot be empty") }
+                   if ("${retention_in_ms}"=='' || "${retention_in_ms}"==',' || "${retention_in_ms}" > 172800000)
+                   { error("retention cannot be empty and can not be more then 2 days") }
+                   if ("${TPS_for_topic}"=='' || "${TPS_for_topic}"==',')
+                   { error("TPS cannot be empty") }
+                   if ("${Bandwidth_of_data}"=='' || "${Bandwidth_of_data}"==',')
+                   { error("Bandwidth of data cannot be empty") }
+                   if ("${Size_of_data_which_will_be_publish_in_1_day}"=='' || "${Size_of_data_which_will_be_publish_in_1_day}"==',')
+                   { error("Size of Data cannot be empty") }
+                   if ("${Source_application_name}"=='' || "${Source_application_name}"==',')
+                   { error("Source Application name cannot be empty") }
+                   if ("${Consumer_names}"=='' || "${Consumer_names}"==',')
+                   { error("consumer name cannot be empty") }
+                  }
+                  catch(Exception e)
+                  {
+                    print(e)
+                  }
+              }
+             }
+            }
+            stage('Execution:Deleting kafka Topic')
+            {
+               steps
+               {  
+                 script
+                 {
+                   if(TaskName == 'Delete')
+                   {
+                     echo "checking if kafka topic is existed or not"
+                     skipRemainingStages = true     
+                     wrap([$class: 'BuildUser']) 
+                             {
+                               timeout(time: 10, unit: 'MINUTES') 
+                               {
+                                 emailext attachLog: true, body: '''$PROJECT_NAME on ${zone} environment - Build # $BUILD_NUMBER - $BUILD_STATUS: Check console output at $BUILD_URL to view the results.''', to: 'mukul.rawat@airtel.com', replyTo: 'di.devops@airtel.com', subject: '$PROJECT_NAME on ${zone} - Build # $BUILD_NUMBER - Approval Request!'
+                                 input(id: "kafka_topic_table_creation", message: "Hello ${BUILD_USER}!! Special-Case:Mukul(b0215166) approval required! ", ok: 'Yes!!', submitter: "b0215166" )
+                                }
+                             }
+                     sh"""
+                        export KAFKA_OPTS="-Djava.security.auth.login.config=/home/suser/jaas.conf"
+                        if kafka-topics --describe --bootstrap-server "${bootstrap_server}" --command-config /home/suser/client.properties --topic "$kafka_topic_name" >> /dev/null 2>&1;    ##redirecting stderr and stdoutput to same place
+                        then
+                            echo "kafka topic: "$kafka_topic_name" is existed."
+                            echo "Deleting the kafka topic: "$kafka_topic_name" "
+                            kafka-topics --bootstrap-server "${bootstrap_server}" --command-config /home/suser/client.properties --delete --topic  "$kafka_topic_name"
+                            exit 0
+                        else 
+                            echo "kafka topic: "$kafka_topic_name" does not exist."
+                            break
+                            exit 0
+                        fi
+                     """
+                     }
+
+                   }
+               }
+              } 
+            stage('Kafka topic details') 
+            {
+              when 
+              {
+                expression
+                 {
+                    !skipRemainingStages
+                 }
+              }
+              steps 
+              {
+                  sh"""
+                  echo "Kafka topic will be created with name: "$kafka_topic_name",Number of partitions:"$Number_of_partitions",Replication factor: "$Replication_factor",retention in milliseconds:"$retention_in_ms""
+                  """
+              }
+            }
+            stage('Kerberos ticket creation') 
+            {
+              when 
+              {
+                expression
+                 {
+                    !skipRemainingStages
+                 }
+              }
+              steps {
+				  echo "Kerberos Ticket Check and Query Execution"
+					
+				  // Fetch the password using getsec command
+				  script {
+					  password = sh(script: "getsec -p /v1/EXTERNAL/data/di_zabbix_int -k di_zabbix_int", returnStdout: true).trim()
+				  }
+					
+				  // Mask the password for security reasons
+				  wrap([$class: 'MaskPasswordsBuildWrapper', varPasswordPairs: [[password: password]]]) {
+                      sh '''
+					  # Get the Kerberos ticket expiration time
+					  kdate=$(klist | awk 'FNR == 5 {print $3" "$4}')
+					  kdatetime=$(date -d "${kdate}" +"%s")
+					  
+					  # Check if the ticket is expired
+					  if [[ $(date -d "${kdate}" +"%s") < $(date +"%s") ]]; then
+						  echo "Generating Kerberos ticket and executing Hive query command"
+						  echo "${password}" | kinit di_zabbix_int
+					  else
+						  echo "Ticket exists, executing shell script directly"
+						  klist
+					  fi
+					  '''
+					}
+				}
+			}	
+            stage('kafka topic check')
+            {
+              when 
+              {
+                expression
+                 {
+                    !skipRemainingStages
+                 }
+              }
+                    steps 
+                    {
+                      script
+                      {
+                        echo "checking if kafka topic is already created or not"
+                        sh """
+                        export KAFKA_OPTS="-Djava.security.auth.login.config=/home/suser/jaas.conf"
+                        if kafka-topics --describe --bootstrap-server "${bootstrap_server}" --command-config /home/suser/client.properties --topic "$kafka_topic_name" >> /dev/null 2>&1;
+                            then
+                                echo "kafka topic: "$kafka_topic_name" is already created. Exiting the job"
+                                exit 1
+                            else
+                                echo "This is a new topic"
+                                echo "Kafka topic will be created with below details
+                                kafka_topic_name                            :"$kafka_topic_name",
+                                Number of partitions                        :"$Number_of_partitions",
+                                Replication factor                          :"$Replication_factor",
+                                retention in milliseconds                   :"$retention_in_ms",
+                                TPS_for_topic                               :"$TPS_for_topic",
+                                Bandwidth_of_data                           :"$Bandwidth_of_data",
+                                Size_of_data_which_will_be_publish_in_1_day :"$Size_of_data_which_will_be_publish_in_1_day",
+                                Consumer_names                              :"$Consumer_names",
+                                Source_application_name                     :"$Source_application_name",
+                                Is_it_streamed_or_event_based_data          :${Is_it_streamed_or_event_based_data}"
+                        fi
+                        """
+                      }
+                    }
+            }
+            stage('Approval')
+            {
+              when 
+              {
+                expression
+                 {
+                    !skipRemainingStages
+                 }
+              }
+                      steps 
+                      {
+                             wrap([$class: 'BuildUser']) 
+                             {
+                               timeout(time: 10, unit: 'MINUTES') 
+                               {
+                                 emailext attachLog: true, body: '''$PROJECT_NAME on ${zone} environment - Build # $BUILD_NUMBER - $BUILD_STATUS: Check console output at $BUILD_URL to view the results.''', to: 'mukul.rawat@airtel.com', replyTo: 'di.devops@airtel.com', subject: '$PROJECT_NAME on ${zone} - Build # $BUILD_NUMBER - Approval Request!'
+                                 input(id: "kafka_topic_table_creation", message: "Hello ${BUILD_USER}!! Special-Case:Mukul(b0215166) approval required! ", ok: 'Yes!!', submitter: "b0215166" )
+                                }
+                             }
+                       }
+            }
+        
+            stage('Execution:Creating kafka Topic') 
+            {
+              when 
+              {
+                expression
+                 {
+                    !skipRemainingStages
+                 }
+              }
+              steps 
+              {
+               script
+               {
+                  sh """
+                  export KAFKA_OPTS="-Djava.security.auth.login.config=/home/suser/jaas.conf"
+                  kafka-topics --create --bootstrap-server "${bootstrap_server}" --command-config /home/suser/client.properties  --replication-factor "$Replication_factor" --partitions "$Number_of_partitions" --topic "$kafka_topic_name" --config retention.ms="$retention_in_ms" 
+                  """
+              }
+             }
+            }
+            stage('save job details of created topic') 
+            {
+              when 
+              {
+                expression
+                 {
+                    !skipRemainingStages
+                 }
+              }
+              steps
+              {
+                wrap([$class: 'BuildUser']) 
+                {
+                  script 
+                  {
+                    def projname = currentBuild.projectName
+                    def buildUrl= env.BUILD_URL
+                    def DATETIME_TAG = java.time.LocalDateTime.now(java.time.ZoneOffset.UTC)
+                    def postData = """
+                                    {
+                                       "index" : "${index_name_create}",
+                                       "data" : 
+                                       {
+                                            "jenkinsProjName" : "${projname}",
+                                            "jenkinsBuildUrl" : "${build_url}",
+                                            "jenkinsBuildUser" : "${BUILD_USER}",
+                                            "Topic Name": "${kafka_topic_name}",
+                                            "Number of Partitions": "${Number_of_partitions}",
+                                            "Replication Factor": "${Replication_factor}",
+                                            "Retention in ms": "${retention_in_ms}",
+                                            "timestamp" : "${DATETIME_TAG}",
+                                            "TPS_for_topic":"${TPS_for_topic}",
+                                            "Bandwidth_of_data":"${Bandwidth_of_data}",
+                                            "Size_of_data_which_will_be_publish_in_1_day":"${Size_of_data_which_will_be_publish_in_1_day}",
+                                            "Consumer_names":"${Consumer_names}",
+                                            "Source_application_name":"${Source_application_name}",
+                                            "Is_it_streamed_or_event_based_data":"${Is_it_streamed_or_event_based_data}"
+                                       }
+                                    }
+                                """
+                    println(postData)
+                    response = httpRequest consoleLogResponseBody: true, acceptType: 'APPLICATION_JSON', contentType: 'APPLICATION_JSON', httpMode: 'POST', requestBody: postData , url: "http://10.5.29.108:3001/es"
+                    echo "Response is : ${response}"
+                  }
+                }
+              }
+            }          
+            
+
+            stage('save job details for deleted topic ') 
+            {
+              when 
+              {
+                expression
+                 {
+                    skipRemainingStages
+                 }
+              }
+              steps
+              {
+                wrap([$class: 'BuildUser']) 
+                {
+                  script 
+                  {
+                    def projname = currentBuild.projectName
+                    def buildUrl= env.BUILD_URL
+                    def DATETIME_TAG = java.time.LocalDateTime.now(java.time.ZoneOffset.UTC)
+                    def postData = """
+                                    {
+                                       "index" : "${index_name_delete}",
+                                       "data" : 
+                                       {
+                                            "jenkinsProjName" : "${projname}",
+                                            "jenkinsBuildUrl" : "${build_url}",
+                                            "jenkinsBuildUser" : "${BUILD_USER}",
+                                            "Topic Name": "${kafka_topic_name}"
+                                       }
+                                    }
+                                """
+                    println(postData)
+                    response = httpRequest consoleLogResponseBody: true, acceptType: 'APPLICATION_JSON', contentType: 'APPLICATION_JSON', httpMode: 'POST', requestBody: postData , url: "http://10.5.29.108:3001/es"
+                    echo "Response is : ${response}"
+                  }
+                }
+              }
+            }          
+        }
+       
+  
+    post
+    {
+        always
+        {
+            script
+            {
+                emailext attachLog: true, body: '''$PROJECT_NAME in ${zone}- Build # $BUILD_NUMBER - $BUILD_STATUS: Check console output at $BUILD_URL to view the results.''', recipientProviders: [requestor()], replyTo: 'mukul.rawat@airtel.com', subject: '$PROJECT_NAME in ${zone}- Build # $BUILD_NUMBER - $BUILD_STATUS!'
+            }
+        }
+    }
+} 
