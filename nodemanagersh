@@ -1,0 +1,85 @@
+#!/bin/bash
+
+Hostname=10.5.233.11
+
+# Function to send a message to Telegram with a custom chat_id
+send_custom_telegram_alert() {
+  local chat_id="$1"
+  local message="$2"
+  curl -s -X POST "http://10.5.29.108:3001/telegram" \
+    -H "Content-Type: application/json" \
+    -d "{\"chat_id\":\"$chat_id\", \"text\": \"$message\"}"
+}
+
+# Fetch AD user password from Vault
+AD_PASS=$(getsec -p /v1/EXTERNAL/data/di_zabbix_int -k di_zabbix_int)
+
+# Check if the password retrieval was successful
+if [ -z "$AD_PASS" ]; then
+  echo "Failed to retrieve the password from Vault. Exiting script."
+  send_telegram_alert "NODEMANAGER:\n\nFailed to retrieve the password from Vault."
+  exit 1
+fi
+
+# 1. Check if ldapsearch command is available
+if ! command -v ldapsearch &> /dev/null; then
+  echo "ldapsearch command not found. Exiting script."
+  send_custom_telegram_alert "-1001894561627" "LDAP:\n\nldapsearch command is not available on $Hostname."
+  exit 1
+fi
+echo "ldapsearch command is available."
+
+# 1. AD password check using ldapsearch
+/usr/bin/ldapsearch -LLL \
+  -H ldap://10.5.112.101:389 \
+  -b "OU=Users,OU=Hadoop-Hosts,DC=india,DC=airtel,DC=itm" \
+  "userPrincipalName=hdfs/n2pl-pa-hdd261.india.airtel.itm@INDIA.AIRTEL.ITM" \
+  -D "di_zabbix_int@INDIA.AIRTEL.ITM" \
+  -w "$AD_PASS" > /dev/null 2>&1
+
+# Check if LDAP query was successful
+if [ $? -ne 0 ]; then
+  echo "LDAP authentication failed. Exiting script."
+  send_custom_telegram_alert "-1001894561627" "LDAP:\n\nLDAP authentication failed on $Hostname."
+  exit 1
+else
+  echo "LDAP authentication successful."
+fi
+
+# 2. Check Node Manager status
+NODE_MANAGER_STATUS=$(ps -ef | grep 'org.apache.hadoop.yarn.server.nodemanager.NodeManager' | grep -v grep)
+
+if [ -z "$NODE_MANAGER_STATUS" ]; then
+  echo "Node manager role is down. Exiting script."
+  send_custom_telegram_alert "-1001894561627" "NODEMANAGER:\n\n Nodemanager is down on $Hostname."
+  exit 1
+else
+  echo "Node manager role is running."
+fi
+
+#3. Test SSH connection for sssd check
+sshpass -p "ibwiafc" ssh -o ConnectTimeout=5 di_zabbix_int@$Hostname 'exit' > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+  echo "SSH is working. No action needed. Exiting script."
+  exit 0
+else
+  echo "SSH is not working. Restarting sssd..."
+  send_custom_telegram_alert "-1001894561627" "SSH:\n\n SSH is not working on $Hostname restarting sssd ."
+  systemctl restart sssd
+  echo "sssd restarted. Waiting for 2 minutes..."
+  sleep 120
+fi
+
+# 4. Re-check SSH after restarting sssd
+sshpass -p "$AD_PASS" ssh -o ConnectTimeout=5 di_zabbix_int@$Hostname 'exit' > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+  echo "Notification: SSH is working after sssd restart."
+  send_custom_telegram_alert "-1001894561627" "SSH:\n\n SSH is working after sssd restart on $Hostname."
+  exit 0
+else
+  echo "SSH still failing. Stopping node manager..."
+  sh /etc/zabbix/scripts/nm_roles.sh role_stop
+  echo "Node manager stopped due to persistent SSH failure."
+  send_custom_telegram_alert "-1001894561627" "NODEMANAGER:\n\n Node manager stopped on $Hostname due to persistent SSH failure."
+  exit 1
+fi
