@@ -1,0 +1,291 @@
+pipeline {
+    agent {
+        label 'prod_233_11'
+    }
+
+    environment {
+        // Define your environment variables (like AD user, keytab file path)
+        AD_USER = 'di_zabbix_int'
+        AD_PASSWORD = credentials('ad-password-credential-id')  // Fetch from Jenkins credentials store
+        KEYTAB_FILE = '/etc/keytabs/logstash.keytab'
+        INVENTORY_URL = 'https://diinventory.airtel.com/dashboard'
+    }
+
+    stages {
+        stage('Fetch Inventory and Filter IPs') {
+            steps {
+                script {
+                    // Run the curl request and get the response
+                    def response = sh(script: '''
+						curl -X GET -k "https://diinventory.airtel.com/api/inventory/" \
+						--header "Authorization: Token 4593b0cdbac21ebf3a8e75dc429ab75f64157b82" \
+						--header 'Content-Type: application/json'
+					''', returnStdout: true).trim()
+					
+					// Check if the response is empty
+					if (!response) {
+						error "Error: Failed to fetch data from API."
+					}
+					
+					// Decode response to lowercase
+					def data = response.toLowerCase()
+					
+					// Run jq to filter IPs based on conditions
+					def ips = sh(script: """
+						echo "$data" | jq -r '.data[] | select((.snow_sys_class_name // "") | test("esx") | not) | select((.description // "") | test("sunset") | not) | select((.application // "") | test("cdwh") | not) | select((.remarks // "") | test("database") | not) | select((.application // "") | test("clm") | not) | select((.application // "") | test("remedy") | not) | select((.remarks // "") | test("open_shift_cluster") | not) | select((.remarks // "") | test("sunset") | not) | select((.remarks // "") | test("darts_dev") | not) | select((.remarks // "") | test("ocp") | not) | select((.remarks // "") | test("non_operation") | not) | select((.remarks // "") | test("dev") | not) | select((.remarks // "") | test("ocp_cluster") | not) | select((.remarks // "") | test("vip") | not) | select((.env // "") | test("dev") | not) | select((.cluster_name // "") | test("windows") | not) | select((.cluster_name // "") | test("oracle") | not) | select((.cluster_name // "") | test("sunset") | not) | select((.cluster_name // "") | test("avdf") | not) | select((.cluster_name // "") | test("not reachable") | not) | select((.cluster_name // "") | test("undesignated") | not) | select((.cluster_name // "") | test("esx") | not) | select((.cluster_name // "") | test("decommission") | not) | select((.cluster_name // "") | test("database") | not) | select((.services // []) | index("ha_vip") | not) | select((.services // []) | index("loadbalancer") | not) | select((.tags_new // []) | index("loadbalancer") // index("ha_vip") | not) | select((.cluster_name // "") | test("optimus") | not) | select((.snow_u_app_name // "") | test("optimus") | not) | select((.business_unit // "") | test("optimus") | not) | select((.snow_u_os // "") | test("windows") | not) | select((.remarks // "") | test("central") | not) | select((.remarks // "") | test("db") | not) | select((.remarks // "") | test("openshift") | not) | .ip'
+					""", returnStdout: true).trim()
+					
+					// Filter and save IPs to a list based on patterns
+					def ipList = ips.split("\n").findAll { ip ->
+						ip ==~ /.*(10\.5\..*|10\.240\..*|10\.241\..*|10\.242\..*|10\.92\..*|10\.56\..*|10\.14\..*|10\.223\..*|10\.222\..*|10\.96\..*|10\.13\..*)/
+					}
+					
+					// If there are matching IPs, save them to a file
+					if (ipList) {
+						writeFile file: 'file.txt', text: ipList.join('\n')
+						echo "Filtered IPs saved to file.txt."
+					} else {
+						echo "No IPs match the given pattern."
+					}
+				}
+			}
+		}
+	}
+	
+	stage('Run Ansible and Identify Logstash Servers') {
+		steps {
+			script {
+				// Map the IPs to user roles based on patterns
+				def userMap = [:]
+				def ipList = readFile('file.txt').split("\n")
+				def logstashIps = []
+				
+				ipList.each { ip ->
+					if (ip ==~ /^10\.5\..*/) {
+						userMap[ip] = "abinitio"
+					} else if (ip ==~ /^10\.240\..*/) {
+						userMap[ip] = "suser"
+					} else if (ip ==~ /^10\.56\..*/) {
+						userMap[ip] = "odin"
+					}
+				}
+				
+				// Save user-specific inventory files
+				writeFile file: 'inventory.txt', text: ipList.join('\n')
+				
+				// Execute Ansible command for each user type
+				ipList.each { ip ->
+					def user = userMap[ip]
+					if (user) {
+						def ansibleCommand = """ansible -i inventory.txt all -m shell -a "rpm -qa | grep -i logstash" -u ${user} -b"""
+						def result = sh(script: ansibleCommand, returnStdout: true).trim()
+						if (result.contains("logstash")) {
+							logstashIps.add(ip)
+						}
+					}
+				}
+				
+				// Save the logstash server IPs to logstash_server.txt
+				if (logstashIps) {
+					writeFile file: 'logstash_server.txt', text: logstashIps.join('\n')
+					echo "Logstash servers saved to logstash_server.txt."
+				} else {
+					echo "No logstash servers found."
+				}
+			}
+		}
+	}
+	
+	stage('Status Logstash Service') {
+		steps {
+			script {
+				// Running Ansible command in shell
+				sh """
+					ansible -i logstash_server.txt all -m shell -a '
+						if [[ \\$ANSIBLE_HOST =~ ^10\\\\.5\\\\.* ]]; then
+							sudo systemctl status logstash
+							sudo -u abinitio systemctl status logstash
+						elif [[ \\$ANSIBLE_HOST =~ ^10\\\\.240\\\\.* ]]; then
+							sudo systemctl status logstash
+							sudo -u suser systemctl status logstash
+						elif [[ \\$ANSIBLE_HOST =~ ^10\\\\.56\\\\.* ]]; then
+							sudo systemctl status logstash
+							sudo -u odin systemctl status logstash
+						fi
+					' --become
+				"""
+			}
+		}
+	}
+	
+	stage('Approval')
+	{
+	  when 
+      {
+        expression
+		 {
+			!skipRemainingStages
+		 }
+	  }
+			 steps 
+			 {
+					 wrap([$class: 'BuildUser']) 
+					 {
+					   timeout(time: 10, unit: 'MINUTES') 
+					   {
+					     emailext attachLog: true, body: '''$PROJECT_NAME on ${zone} environment - Build # $BUILD_NUMBER - $BUILD_STATUS: Check console output at $BUILD_URL to view the results.''', to: 'mukul.rawat@airtel.com', replyTo: 'di.devops@airtel.com', subject: '$PROJECT_NAME on ${zone} - Build # $BUILD_NUMBER - Approval Request!'
+						 input(id: "Log_ingestion_to_logstash_server", message: "Hello ${BUILD_USER}!! Special-Case:Mukul(b0215166) approval required! ", ok: 'Yes!!', submitter: "b0215166" )
+						}
+					 }
+			  }
+	}
+	
+    stages {
+        stage('Fetch AD Password From Vault & Generate Keytab') {
+            steps {
+                script {
+                    // Fetch the AD password from Vault using VaultTokenCredentialBinding
+                    withCredentials([[$class: 'VaultTokenCredentialBinding', credentialsId: 'vault-jenkins', vaultAddr: VAULT_ADDR]]) {
+                        echo "Fetching AD password from Vault..."
+                        password = sh(script: '''curl -k ${VAULT_ADDR}/v1/DI/data/DI%20AD%20users --header "X-Vault-Token: ${VAULT_TOKEN}" | jq -r ".data.data.di_zabbix_int"''', returnStdout: true).trim()
+
+                        // Mask the password for security reasons
+                        wrap([$class: 'MaskPasswordsBuildWrapper', varPasswordPairs: [[password: password]]]) {
+                            echo "AD Password fetched successfully (password is masked for security)."
+                        }
+                    }
+
+                    // Run ktutil commands to add entry to the Keytab
+					def commands = ''' 
+						ktutil << EOF
+						add_entry -${password} -p ${AD_USER}@INDIA.AIRTEL.ITM -k 1 -e rc4-hmac
+						wkt ${AD_USER}.keytab
+						quit
+						EOF
+					'''	
+					// Execute the ktutil commands
+					sh script: commands, returnStatus: true
+					echo "ktutil commands executed successfully."
+                }
+            }
+        }
+    }
+	
+	stage('Transfer and Backup Keytab to Servers') {
+		steps {
+			script {
+				// Read list of logstash servers from the file
+				def servers = readFile('logstash_servers.txt').split("\n")
+				
+				// Define separate lists for each category of servers
+				def abinitioServers = []
+				def suserServers = []
+				def odinServers = []
+				
+				// Classify servers based on the IP address pattern
+				servers.each { server ->
+					if (server.startsWith('10.5.')) {
+						abinitioServers << server
+					} else if (server.startsWith('10.240.')) {
+                        suserServers << server
+                    } else if (server.startsWith('10.56.')) {
+                        odinServers << server
+                    }
+                }
+				
+				// Function to run the Ansible command for a given list of servers
+                def runAnsibleCommand(servers, group) {
+                    if (servers.size() > 0) {
+                        def serverList = servers.join(',')
+                        def ansibleCommand = """
+							ansible ${serverList} -m shell -a '
+                                # Backup existing keytab
+                                if [ -f /etc/logstash/krb5.keytab ]; then
+                                    mv /etc/logsash/krb5.keytab /etc/logstash/krb5.keytab.bak
+                                fi
+
+                                # Transfer the new keytab to the server
+                                cp /tmp/${AD_USER}.keytab /etc/logstash/krb5.keytab
+
+                                # Set proper permissions for the new keytab
+                                chown root:root /etc/logstash/krb5.keytab
+                                chmod 600 /etc/logstash/krb5.keytab
+							' -b
+                        """
+                        echo "Moving and backing up keytab for ${group} servers: ${serverList}"
+                        sh ansibleCommand
+                    }
+                }
+				
+				// Copy the new keytab to the servers (using Ansible for each group)
+                def newKeytab = "${workspace}/${AD_USER}.keytab"  // Path to the newly created keytab
+
+                // Ensure the new keytab is available on the Jenkins master before transferring
+                sh "cp ${newKeytab} /tmp/${AD_USER}.keytab"  // Copy the keytab to /tmp for the transfer
+
+                // Execute the Ansible command for each group of servers
+                runAnsibleCommand(abinitioServers, 'abinitio')
+                runAnsibleCommand(suserServers, 'suser')
+                runAnsibleCommand(odinServers, 'odin')
+
+                echo "Keytab moved and backed up on all applicable servers."
+			}
+		}
+	}
+
+	stage('Restart Logstash Service') {
+		steps {
+			script {
+				// Read list of logstash servers from the file
+				def servers = readFile('logstash_servers.txt').split("\n")
+				
+				// Define separate lists for each category of servers
+				def abinitioServers = []
+				def suserServers = []
+				def odinServers = []
+            
+				// Classify servers based on the IP address pattern
+				servers.each { server ->
+					if (server.startsWith('10.5.')) {
+						abinitioServers << server
+					} else if (server.startsWith('10.240.')) {
+						suserServers << server
+					} else if (server.startsWith('10.56.')) {
+						odinServers << server
+					}
+				}
+				
+				// Function to run the ansible command for a given list of servers
+				def runAnsibleCommand(servers, group) {
+					if (servers.size() > 0) {
+						def serverList = servers.join(',')
+						def ansibleCommand = """
+							ansible ${serverList} -m shell -a 'sudo systemctl restart logstash' -b
+						"""
+						echo "Restarting Logstash service on ${group} servers: ${serverList}"
+						sh ansibleCommand
+					}
+				}
+				// Execute the ansible command for each group of servers
+				runAnsibleCommand(abinitioServers, 'abinitio')
+				runAnsibleCommand(suserServers, 'suser')
+				runAnsibleCommand(odinServers, 'odin')
+
+				echo "Logstash service restarted on all applicable servers."
+			}
+		}
+	}
+
+
+    post {
+        always {
+            // Clean up or any post-build actions can go here
+            echo "Pipeline completed. Cleaning up..."
+        }
+    }
+
+
+
+
+
+
