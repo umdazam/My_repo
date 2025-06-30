@@ -1,0 +1,83 @@
+ELK upgrade...!!!
+
+for the upgrade we need to place the rpm file of logstash,es & kibana in /tmp or /etc
+
+After that we have to take backup for /etc/elasticsearch  &  /etc/logstash  &  /etc/kibana with the below cmd
+cd /etc/
+cp logstash logstash_bkp
+cp elasticsearch elascticsearch_bkp
+cp kibana kibana_bkp
+
+Then we need to take backup /usr/share/elasticsearch & kibana also with below cmd
+cd /usr/share/
+cp elasticsearch elascticsearch_bkp
+cp kibana kibana_bkp
+
+And need to take the backup of service file also logstash,kibana & elasticsearch service files withe below cmd
+cd /usr/lib/systemd/system
+cp logstash.service logstash.service_bkp
+cp kibana.service kibana.service_bkp
+cp elasticsearch.service elasticsearch.service_bkp
+
+so, we took bkp for all the service files
+
+First we have to took a logstash to upgrade first on logstash server's
+
+After taking backup upgrade the logstash with below cmd
+
+rpm -Uvh logstash-8.*.*-x86_64.rpm
+
+after upgrade command restart & enable the service
+systemctl restart logstash
+systemctl status logstash
+systemctl enable logstash
+
+Completion of these steps the logstash is running successfull.
+
+Now we proceed for upgrade with the latest rpm upgraded file with the cmd given below
+rpm -Uvh elasticsearch-8.*.*-x86_64.rpm
+
+After running the upgrade cmd we have to restart the service.
+systemctl restart elasticsearch
+
+The service is down i think so.we have to create a directory with two files
+create the directory on the below path
+
+cd /usr/lib/systemd/system/
+mkdir elasticsearch.service.d
+cd elasticsearch.service.d
+touch override.conf
+touch startup-timeout.conf
+cat override.conf
+[Service]
+LimitMEMLOCK=infinity
+
+cat startup-timeout.conf
+[Service]
+#TimeoutStartSec=180
+TimeoutStartSec=300
+NotifyAccess=all
+
+After creating these two files restart the es service
+systemctl restart elascticsearch
+
+check the status & enable the service
+systemctl status elascticsearch
+systemctl enable elascticsearch
+
+Do the same thing with datanodes one by one & then go on with mn 2 then after mn 1
+After upgrading elascticsearch service of all the node of clusters then upgrade the kibana on nodes where the service is running with below cmd
+
+rpm -Uvh kibana-8.*.*-x86_64.rpm
+
+After that took restart the kibana & enable it
+systemctl restart kibana
+systemctl status kibana
+systemctl enable kibana
+
+If in case kibana URL is not working follow the below step.
+
+After the upgrade completion of elascticsearch & kibana service on all the nodes of elk cluister restart those services together on all nodes with ansible cmd.
+ansible -i <file name> all -m shekk -a "systemctl status kibana & elasticsearch" -b.
+
+======================>>>>>>>>>>
