@@ -78,6 +78,6 @@ systemctl enable kibana
 If in case kibana URL is not working follow the below step.
 
 After the upgrade completion of elascticsearch & kibana service on all the nodes of elk cluister restart those services together on all nodes with ansible cmd.
-ansible -i <file name> all -m shekk -a "systemctl status kibana & elasticsearch" -b.
+ansible -i <file name> all -m shell -a "systemctl status kibana & elasticsearch" -b.
 
 ======================>>>>>>>>>>
